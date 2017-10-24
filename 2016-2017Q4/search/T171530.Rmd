@@ -1,0 +1,791 @@
+---
+title: "T171530"
+author: "Chelsy Xie"
+date: '`r Sys.Date()`'
+output:
+  html_document:
+    # Table of Contents
+    toc: false
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+    toc_depth: 3
+    code_folding: hide
+    # Figures
+    fig_width: 10
+    fig_height: 6
+    # Theme
+    theme: flatly
+    highlight: zenburn
+    # Files
+    self_contained: true
+    keep_md: false
+    # Extras
+    mathjax: https://tools-static.wmflabs.org/cdnjs/ajax/libs/mathjax/2.6.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML
+    md_extensions: +raw_html +markdown_in_html_blocks +tex_math_dollars +fancy_lists +startnum +lists_without_preceding_blankline -autolink_bare_uris
+---
+```{js, echo=FALSE}
+$( function() {
+  /* Lets the user click on the images to view them in full resolution. */
+  $( "img" ).wrap( function() {
+    var link = $( '<a/>' );
+    link.attr( 'href', $( this ).attr( 'src' ));
+    link.attr( 'target', '_blank' );
+    return link;
+  } );
+} );
+```
+```{r setup, echo=FALSE, error = FALSE, message = FALSE, warning = FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE, error = FALSE, message = FALSE, warning = FALSE
+)
+set.seed(0)
+suppressPackageStartupMessages(library(tidyverse))
+```
+
+<!-- **Useful Links: ** \ -->
+<!-- Ticket: https://phabricator.wikimedia.org/T171530 \ -->
+<!-- Example Slides: https://commons.wikimedia.org/wiki/File:Wikimedia_Foundation_Reading_metrics_Q3_2016-17_(Jan-Mar_2017).pdf \ -->
+<!-- Discovery Slides: https://docs.google.com/presentation/d/1dj06zWGa7E3IcvCyZQNmfetZiWoTqVP3n1i4hQVmwo8/edit?ts=59766a07#slide=id.g23fef44b35_0_0 -->
+<!-- https://docs.google.com/presentation/d/1dj06zWGa7E3IcvCyZQNmfetZiWoTqVP3n1i4hQVmwo8/edit#slide=id.g23fef44b35_0_301 -->
+
+<!-- --- -->
+
+<!-- **Data Source: ** \ -->
+<!-- Data for #desktop_events(EL): https://analytics.wikimedia.org/datasets/discovery/metrics/search/desktop_event_counts.tsv \ -->
+<!-- Data for #mobile_events(EL): https://analytics.wikimedia.org/datasets/discovery/metrics/search/mobile_event_counts.tsv \ -->
+<!-- Data for #app_events(EL): https://analytics.wikimedia.org/datasets/discovery/metrics/search/app_event_counts.tsv \ -->
+<!-- Data for #kpi_zero_results (CirrusSearchRequestSet): https://analytics.wikimedia.org/datasets/discovery/metrics/search/cirrus_query_aggregates_with_automata.tsv \ -->
+<!-- Data for #kpi_augmented_clickthroughs: combine desktop, mobile web, mobile app above \ -->
+<!-- Data for #failure_rate: https://analytics.wikimedia.org/datasets/discovery/metrics/search/cirrus_query_aggregates_with_automata.tsv and https://analytics.wikimedia.org/datasets/discovery/metrics/search/cirrus_query_aggregates_no_automata.tsv \ -->
+<!-- Data for #failure_breakdown: https://analytics.wikimedia.org/datasets/discovery/metrics/search/cirrus_query_breakdowns_with_automata.tsv and https://analytics.wikimedia.org/datasets/discovery/metrics/search/cirrus_query_breakdowns_no_automata.tsv \ -->
+<!-- Data for #failure_suggestions: https://analytics.wikimedia.org/datasets/discovery/metrics/search/cirrus_suggestion_breakdown_with_automata.tsv and https://analytics.wikimedia.org/datasets/discovery/metrics/search/cirrus_suggestion_breakdown_no_automata.tsv with #failure_breakdown full-text -->
+
+## Data
+Get Q4 TSS2:
+```{r tss2_fetch, eval=FALSE, echo=FALSE}
+query <- "SELECT timestamp, 
+  event_uniqueId AS event_id,
+  event_pageViewId AS page_id,
+  event_searchSessionId AS session_id,
+  wiki,
+  MD5(LOWER(TRIM(event_query))) AS query_hash, 
+  event_action AS event,
+  CASE
+    WHEN event_position < 0 THEN NULL
+    ELSE event_position
+    END AS event_position,
+  CASE
+    WHEN event_action = 'searchResultPage' AND event_hitsReturned > 0 THEN 'TRUE'
+    WHEN event_action = 'searchResultPage' AND event_hitsReturned IS NULL THEN 'FALSE'
+    ELSE NULL
+    END AS `some same-wiki results`,
+  CASE
+    WHEN event_action = 'searchResultPage' AND event_hitsReturned > -1 THEN event_hitsReturned
+    WHEN event_action = 'searchResultPage' AND event_hitsReturned IS NULL THEN 0
+    ELSE NULL
+    END AS n_results,
+  event_msToDisplayResults AS load_time
+  FROM TestSearchSatisfaction2_16270835
+  WHERE LEFT(timestamp, 8) >= '20170401' AND LEFT(timestamp, 8) < '20170701'
+  AND event_action IN ('searchResultPage', 'click', 'iwclick', 'ssclick')
+  AND event_subTest IS NULL
+  AND event_source = 'fulltext'
+  AND CASE WHEN event_action = 'searchResultPage' THEN event_msToDisplayResults IS NOT NULL
+              WHEN event_action IN ('click', 'iwclick', 'ssclick') THEN event_position IS NOT NULL AND event_position > -1
+              WHEN event_action = 'visitPage' THEN event_pageViewId IS NOT NULL
+              WHEN event_action = 'checkin' THEN event_checkin IS NOT NULL AND event_pageViewId IS NOT NULL
+              ELSE TRUE
+         END;"
+tss2_q4 <- wmf::mysql_read(query, "log")
+readr::write_rds(tss2_q4, "data/quarterly_metrics/tss2_q4.rds", "gz")
+# Local
+system("scp chelsyx@stat5:~/data/quarterly_metrics/tss2_q4.rds data/")
+
+
+# Run the query on TestSearchSatisfaction2_16909631 (schema changed on 20170630)
+query <- "SELECT timestamp, 
+  event_uniqueId AS event_id,
+  event_pageViewId AS page_id,
+  event_searchSessionId AS session_id,
+  wiki,
+  MD5(LOWER(TRIM(event_query))) AS query_hash, 
+  event_action AS event,
+  CASE
+    WHEN event_position < 0 THEN NULL
+    ELSE event_position
+    END AS event_position,
+  CASE
+    WHEN event_action = 'searchResultPage' AND event_hitsReturned > 0 THEN 'TRUE'
+    WHEN event_action = 'searchResultPage' AND event_hitsReturned IS NULL THEN 'FALSE'
+    ELSE NULL
+    END AS `some same-wiki results`,
+  CASE
+    WHEN event_action = 'searchResultPage' AND event_hitsReturned > -1 THEN event_hitsReturned
+    WHEN event_action = 'searchResultPage' AND event_hitsReturned IS NULL THEN 0
+    ELSE NULL
+    END AS n_results,
+  event_msToDisplayResults AS load_time
+  FROM TestSearchSatisfaction2_16909631
+  WHERE LEFT(timestamp, 8) >= '20170401' AND LEFT(timestamp, 8) < '20170801'
+  AND event_action IN ('searchResultPage', 'click', 'iwclick', 'ssclick')
+  AND event_subTest IS NULL
+  AND event_source = 'fulltext'
+  AND CASE WHEN event_action = 'searchResultPage' THEN event_msToDisplayResults IS NOT NULL
+              WHEN event_action IN ('click', 'iwclick', 'ssclick') THEN event_position IS NOT NULL AND event_position > -1
+              WHEN event_action = 'visitPage' THEN event_pageViewId IS NOT NULL
+              WHEN event_action = 'checkin' THEN event_checkin IS NOT NULL AND event_pageViewId IS NOT NULL
+              ELSE TRUE
+         END;"
+tss2_q4 <- wmf::mysql_read(query, "log")
+readr::write_rds(tss2_q4, "data/quarterly_metrics/tss2_july.rds", "gz")
+# Local
+system("scp chelsyx@stat5:~/data/quarterly_metrics/tss2_july.rds data/")
+```
+
+```{r tss2_cleanup, eval=FALSE, echo=FALSE}
+tss2_q4 <- readr::read_rds("data/tss2_q4.rds")
+tss2_july <- readr::read_rds("data/tss2_july.rds")
+
+# De-duplicating events
+tss2_q4 <- tss2_q4 %>%
+  rbind(tss2_july) %>%
+  mutate(
+    timestamp = lubridate::ymd_hms(timestamp),
+    date = as.Date(timestamp)
+  ) %>%
+  arrange(session_id, event_id, timestamp) %>%
+  dplyr::distinct(session_id, event_id, .keep_all = TRUE)
+
+# De-duplicating SERPs...
+SERPs <- tss2_q4 %>%
+  filter(event == "searchResultPage") %>%
+  select(c(session_id, page_id, query_hash)) %>%
+  group_by(session_id, query_hash) %>%
+  mutate(serp_id = page_id[1]) %>%
+  ungroup %>%
+  select(c(page_id, serp_id))
+tss2_q4 <- tss2_q4 %>%
+  dplyr::left_join(SERPs, by = "page_id")
+rm(SERPs) # to free up memory
+
+# Removing events without an associated SERP (orphan clicks and check-ins)...
+tss2_q4 <- tss2_q4 %>%
+  filter(!(is.na(serp_id) & !(event %in% c("visitPage", "checkin")))) # remove orphan click
+readr::write_rds(tss2_q4, "data/tss2_q4_cleanup.rds", "gz")
+
+# Aggregating by search...
+tss2_searches <- tss2_q4 %>%
+  filter(!(is.na(serp_id))) %>% # remove visitPage and checkin events
+  arrange(date, session_id, serp_id, timestamp) %>%
+  group_by(date, wiki, session_id, serp_id) %>%
+  summarize(
+    timestamp = timestamp[1],
+    `got same-wiki results` = any(`some same-wiki results` == "TRUE", na.rm = TRUE),
+    engaged = any(event != "searchResultPage") || length(unique(page_id[event == "searchResultPage"])) > 1,
+    `same-wiki clickthrough` = "click" %in% event,
+    `sister clickthrough` = "ssclick" %in% event,
+    `no. same-wiki results clicked` = length(unique(event_position[event == "click"])),
+    `first clicked same-wiki results position` = ifelse(`same-wiki clickthrough`, event_position[event == "click"][1], NA), # event_position is 0-based
+    `max clicked position (same-wiki)` = ifelse(`same-wiki clickthrough`, max(event_position[event == "click"], na.rm = TRUE), NA)
+  ) %>%
+  ungroup
+readr::write_rds(tss2_searches, "data/tss2_searches.rds", "gz")
+```
+
+Get daily SERP, search, user count:
+
+```{r daily_serp_fetch, eval=FALSE}
+#Count daily SERP
+start_date <- as.Date("2017-04-22")
+end_date <- as.Date("2017-06-30")
+daily_serp <- do.call(rbind, lapply(seq(start_date, end_date, "day"), function(date) {
+  cat("Fetching webrequest data from ", as.character(date), "\n")
+  clause_data <- wmf::date_clause(date)
+  query <- paste("USE wmf;
+    SELECT
+      date,
+      access_method,
+      agent_type, 
+      COUNT(DISTINCT CONCAT(client_ip, user_agent, query)) AS n_search,
+      COUNT(*) AS n_serp, -- a lot of NULL searchToken, so don't count DISTINCT CONCAT(client_ip, user_agent, searchToken)
+      COUNT(DISTINCT CONCAT(client_ip, user_agent)) AS n_user
+    FROM (
+      SELECT 
+        CONCAT(year, '-', LPAD(month, 2, '0'), '-', LPAD(day, 2, '0')) AS date,
+        access_method,
+        client_ip, 
+        user_agent,
+        agent_type,
+        PARSE_URL(CONCAT('http://', uri_host, uri_path, uri_query), 'QUERY', 'search') AS query,
+        PARSE_URL(CONCAT('http://', uri_host, uri_path, uri_query), 'QUERY', 'searchToken') AS searchToken -- a lot of NULL
+      FROM webrequest",
+    clause_data$date_clause,
+    "AND webrequest_source = 'text'
+    AND is_pageview
+    -- flag for pageviews that are search results pages
+    AND page_id IS NULL
+    AND (
+      uri_path = '/wiki/Special:Search'
+      OR (
+        uri_path = '/w/index.php'
+        AND (
+          LENGTH(PARSE_URL(CONCAT('http://', uri_host, uri_path, uri_query), 'QUERY', 'search')) > 0
+          OR LENGTH(PARSE_URL(CONCAT('http://', uri_host, uri_path, uri_query), 'QUERY', 'searchToken')) > 0
+        )
+      )
+    )
+  ) AS serp
+  GROUP BY date, access_method, agent_type;") 
+  results <- wmf::query_hive(query)
+  return(results)
+}))
+readr::write_rds(daily_serp, "data/quarterly_metrics/daily_serp.rds", "gz")
+# Local
+system("scp chelsyx@stat5:~/data/quarterly_metrics/daily_serp.rds data/")
+```
+
+Daily pageviews from SERP, count search and user:
+
+```{r daily_pv_from_serp_fetch, eval=FALSE}
+#Count daily Pageviews from SERP
+start_date <- as.Date("2017-04-22")
+end_date <- as.Date("2017-06-30")
+daily_pv_from_serp <- do.call(rbind, lapply(seq(start_date, end_date, "day"), function(date) {
+  cat("Fetching webrequest data from ", as.character(date), "\n")
+  clause_data <- wmf::date_clause(date)
+  query <- paste("USE wmf;
+    SELECT
+      date,
+      access_method,
+      agent_type, 
+      COUNT(DISTINCT CONCAT(client_ip, user_agent, query)) AS n_search,
+      COUNT(*) AS n_pv, 
+      COUNT(DISTINCT CONCAT(client_ip, user_agent)) AS n_user
+    FROM (
+      SELECT 
+        CONCAT(year, '-', LPAD(month, 2, '0'), '-', LPAD(day, 2, '0')) AS date,
+        access_method,
+        client_ip, 
+        user_agent,
+        agent_type,
+        PARSE_URL(referer, 'QUERY', 'search') AS query,
+        PARSE_URL(referer, 'QUERY', 'searchToken') AS searchToken
+      FROM webrequest",
+    clause_data$date_clause,
+    "AND webrequest_source = 'text'
+    AND is_pageview
+    -- only those that have been referred by a search results page:
+    AND referer_class = 'internal'
+    AND (
+      LENGTH(PARSE_URL(referer, 'QUERY', 'search')) > 0
+      OR LENGTH(PARSE_URL(referer, 'QUERY', 'searchToken')) > 0
+    )
+  ) AS pv
+  GROUP BY date, access_method, agent_type;")  
+  results <- wmf::query_hive(query)
+  return(results)
+}))
+readr::write_rds(daily_pv_from_serp, "data/quarterly_metrics/daily_pv_from_serp.rds", "gz")
+# Local
+system("scp chelsyx@stat5:~/data/quarterly_metrics/daily_pv_from_serp.rds data/")
+```
+
+```{r read_in_data, echo=FALSE}
+daily_serp <- readr::read_rds("data/daily_serp.rds") %>%
+  filter(date != "2017-04-22", agent_type == "user") %>%
+  mutate(date = lubridate::ymd(date)) %>%
+  mutate(weekday = weekdays(date))
+# mediate spike in May 31th, Jun 1st (Thursday): replace with median of the same day of week
+daily_serp$n_search[daily_serp$date == as.Date("2017-05-31") & daily_serp$access_method == "desktop"] <- median(daily_serp$n_search[daily_serp$access_method == "desktop" & daily_serp$weekday == "Wednesday"])
+daily_serp$n_serp[daily_serp$date == as.Date("2017-05-31") & daily_serp$access_method == "desktop"] <- median(daily_serp$n_serp[daily_serp$access_method == "desktop" & daily_serp$weekday == "Wednesday"])
+daily_serp$n_search[daily_serp$date == as.Date("2017-06-01") & daily_serp$access_method == "desktop"] <- median(daily_serp$n_search[daily_serp$access_method == "desktop" & daily_serp$weekday == "Thursday"])
+daily_serp$n_serp[daily_serp$date == as.Date("2017-06-01") & daily_serp$access_method == "desktop"] <- median(daily_serp$n_serp[daily_serp$access_method == "desktop" & daily_serp$weekday == "Thursday"])
+daily_serp <- daily_serp %>% select(-weekday)
+
+daily_pv_from_serp <- readr::read_rds("data/daily_pv_from_serp.rds") %>%
+  filter(date != "2017-04-22", agent_type == "user") %>%
+  mutate(date = lubridate::ymd(date))
+
+daily_serp_no_access <- readr::read_rds("data/daily_serp_no_access.rds") %>%
+  filter(date != "2017-04-22", agent_type == "user") %>%
+  mutate(date = lubridate::ymd(date)) %>%
+  mutate(weekday = weekdays(date))
+# mediate spike in May 31th, Jun 1st (Thursday): replace with median of the same day of week
+daily_serp_no_access$n_search[daily_serp_no_access$date == as.Date("2017-05-31")] <- median(daily_serp_no_access$n_search[daily_serp_no_access$weekday == "Wednesday"])
+daily_serp_no_access$n_serp[daily_serp_no_access$date == as.Date("2017-05-31")] <- median(daily_serp_no_access$n_serp[daily_serp_no_access$weekday == "Wednesday"])
+daily_serp_no_access$n_search[daily_serp_no_access$date == as.Date("2017-06-01")] <- median(daily_serp_no_access$n_search[daily_serp_no_access$weekday == "Thursday"])
+daily_serp_no_access$n_serp[daily_serp_no_access$date == as.Date("2017-06-01")] <- median(daily_serp_no_access$n_serp[daily_serp_no_access$weekday == "Thursday"])
+daily_serp_no_access <- daily_serp_no_access %>% select(-weekday)
+
+daily_pv_from_serp_no_access <- readr::read_rds("data/daily_pv_from_serp_no_access.rds") %>%
+  filter(date != "2017-04-22", agent_type == "user") %>%
+  mutate(date = lubridate::ymd(date))
+
+tss2_q4 <- readr::read_rds("data/tss2_q4_cleanup.rds")
+tss2_searches <- readr::read_rds("data/tss2_searches.rds")
+```
+
+## Completion Rate
+
+absolute searches –> results shown(non-ZRR )–> clickthroughs
+
+The first two graphs use webrequest data, which counts the absolute number of fulltext searches on all platforms. The median non-zero result rate is 81.3%, the median clickthrough rate is 75.5%, which is way too high. We haven't found out the reason yet...
+
+```{r completion_rate, eval=TRUE}
+daily_search_automata <- daily_serp_no_access %>%
+  group_by(date) %>%
+  summarise(n_search = sum(n_search))
+
+zrr_with_automata <- polloi::read_dataset("discovery/metrics/search/cirrus_query_breakdowns_with_automata.tsv", col_types = "Dcd") %>%
+  dplyr::filter(!is.na(query_type), !is.na(rate)) %>%
+  mutate(date = lubridate::ymd(date),
+         query_type = if_else(grepl("full.?text", query_type, ignore.case = TRUE), "fulltext", query_type)) %>%
+ filter(date >= as.Date("2017-04-23"), date < as.Date("2017-07-01"), query_type == "fulltext")
+
+daily_clicked_search_automata <- daily_pv_from_serp_no_access %>%
+  group_by(date) %>%
+  summarise(clicked_search = sum(n_search))
+
+daily_comp_rate <- daily_search_automata %>%
+  mutate(search_with_result=n_search*(1-zrr_with_automata$rate)) %>%
+  inner_join(daily_clicked_search_automata, by = "date")
+  
+daily_comp_rate %>%
+  rename(`All Searches` = n_search, `Searches with Results` = search_with_result, `Searches with Clicks` = clicked_search) %>%
+  gather(key=Group, value = count, -date) %>%
+  ggplot(aes(x=date, y=count, colour=Group)) + 
+  geom_line(size=1.2) +
+  scale_x_date(name = "Date") +
+  scale_y_continuous(labels=polloi::compress, name = "Number of Searches") +
+  ggtitle("Fulltext Searches on All Platforms", subtitle = "Webrequest data") +
+  theme(legend.position = "bottom") +
+  annotate("segment", x = as.Date("2017-07-01"), xend = as.Date("2017-07-01"), 
+           y = 3000000, yend = 4000000, arrow=arrow(ends="both", angle=90, length=unit(.2,"cm"))) +
+  annotate("text", x = as.Date("2017-07-05"), y = 3500000, label = "81.3%") +
+  annotate("segment", x = as.Date("2017-07-01"), xend = as.Date("2017-07-01"), 
+           y = 2300000, yend = 2900000, arrow=arrow(ends="both", angle=90, length=unit(.2,"cm"))) +
+  annotate("text", x = as.Date("2017-07-05"), y = 2600000, label = "75.5%") 
+```
+
+```{r ctr, eval=TRUE}
+daily_comp_rate <- daily_comp_rate %>%
+  mutate(ctr = clicked_search/search_with_result)
+
+daily_comp_rate %>%
+ggplot(aes(x=date, y=ctr)) + 
+  geom_line(size=1.2) +
+  scale_x_date(name = "Date") +
+  scale_y_continuous(name = "Clickthrough Rate") +
+  ggtitle("Clickthrough Rate for Fulltext Searches on All Platforms", subtitle = "Webrequest data") +
+  theme(legend.position = "bottom")
+```
+
+Instead, I suggest we use eventlogging data as below. The median non-zero result rate is 77.6%, the median clickthrough rate is 32.3%.
+
+```{r completion_rate_tss2, eval=TRUE}
+tss2_searches %>%
+  group_by(date) %>%
+  summarise(`All Searches` = n(), 
+            `Searches with Results` = sum(`got same-wiki results`, na.rm = TRUE), 
+            `Searches with Clicks` = sum(`same-wiki clickthrough`, na.rm = TRUE)) %>%
+  gather(key=Group, value = count, -date) %>%
+  ggplot(aes(x=date, y=count, colour=Group)) + 
+  geom_line(size=1.2) +
+  scale_x_date(name = "Date") +
+  scale_y_continuous(labels=polloi::compress, name = "Number of Searches") +
+  ggtitle("Fulltext Searches on Desktop") + #subtitle = "Eventlogging data"
+  theme(legend.position = "bottom") +
+  geom_vline(xintercept = as.numeric(as.Date("2017-04-25")),
+               linetype = "dashed", color = "black") +
+  geom_vline(xintercept = as.numeric(as.Date("2017-06-15")),
+             linetype = "dashed", color = "black") + 
+  geom_vline(xintercept = as.numeric(as.Date("2017-06-28")),
+             linetype = "dashed", color = "black") + 
+  annotate("text", x = as.Date("2017-04-26"), y = 15000, label = "sample rate changed", angle = 90) +
+  # annotate("text", x = as.Date("2017-06-16"), y = 15000, label = "sister search deployed", angle = 90) +
+  # annotate("text", x = as.Date("2017-06-29"), y = 15000, label = "started to collect data", angle = 90) +
+  annotate("segment", x = as.Date("2017-08-01"), xend = as.Date("2017-08-01"), 
+           y = 20000, yend = 30000, arrow=arrow(ends="both", angle=90, length=unit(.2,"cm"))) +
+  annotate("text", x = as.Date("2017-08-07"), y = 25000, label = "77.6%") +
+  annotate("segment", x = as.Date("2017-08-01"), xend = as.Date("2017-08-01"), 
+           y = 7000, yend = 19000, arrow=arrow(ends="both", angle=90, length=unit(.2,"cm"))) +
+  annotate("text", x = as.Date("2017-08-07"), y = 13000, label = "32.3%") 
+  #labs(caption = "*On April 25th, we changed the sample rates for several projects. On 2017-06-15 we deployed the sister search feature to all Wikipedia in all languages and started to collect eventlogging data on 2017-06-29.")
+```
+
+```{r zrr_all}
+zrr_all_no_automata <- polloi::read_dataset("discovery/metrics/search/cirrus_query_aggregates_no_automata.tsv", col_types = "Dd") %>%
+  dplyr::filter(!is.na(rate), date >= "2017-04-01")
+zrr_all_no_automata %>%
+  ggplot(aes(x=date, y=rate)) + 
+  geom_line(size=1.2, color = "#E41A1C") +
+  geom_smooth(se = FALSE, color = "#E41A1C") + 
+  scale_x_date(name = "Date") +
+  scale_y_continuous(labels=scales::percent, name = "Zero Results Rate") +
+  ggtitle("Zero Results Rate, by day") +
+  theme_minimal(base_size = 15)
+```
+
+```{r ctr_all}
+desktop_clt <- polloi::read_dataset("discovery/metrics/search/desktop_event_counts.tsv", col_types = "Dci") %>%
+  dplyr::filter(!is.na(action), !is.na(events), date >= "2017-04-01") %>%
+  tidyr::spread(action, events, fill = 0)
+mobile_clt <- polloi::read_dataset("discovery/metrics/search/mobile_event_counts.tsv", col_types = "Dci") %>%
+  dplyr::filter(!is.na(action), !is.na(events), date >= "2017-04-01") %>%
+  tidyr::spread(action, events, fill = 0)
+app_clt <- polloi::read_dataset("discovery/metrics/search/app_event_counts.tsv", col_types = "Dcci") %>%
+  dplyr::filter(!is.na(action), !is.na(events), date >= "2017-04-01") %>%
+  dplyr::distinct(date, platform, action, .keep_all = TRUE) %>%
+  tidyr::spread(action, events, fill = 0)
+clickthrough_rate <- list(
+  desktop = dplyr::select(desktop_clt, c(date, clickthroughs, `Result pages opened`)),
+  mobile = dplyr::select(mobile_clt, c(date, clickthroughs, `Result pages opened`)),
+  app = dplyr::select(app_clt, c(date, clickthroughs, `Result pages opened`))
+) %>%
+  dplyr::bind_rows(.id = "platform") %>%
+  dplyr::group_by(date) %>%
+  dplyr::summarize(clickthroughs = sum(clickthroughs), serps = sum(`Result pages opened`)) %>%
+  dplyr::transmute(
+    date = date,
+    `Clickthrough rate` = clickthroughs / serps,
+  )
+
+clickthrough_rate %>%
+  ggplot(aes(x=date, y=`Clickthrough rate`)) + 
+  geom_line(size=1.2, color = "#377EB8") +
+  geom_smooth(se = FALSE, color = "#377EB8") + 
+  scale_x_date(name = "Date") +
+  scale_y_continuous(labels=scales::percent, name = "Clickthrough Rate") +
+  ggtitle("Clickthrough Rate, by day") +
+  theme_minimal(base_size = 15)
+```
+
+## Return Rate
+
+Users may click back to search page directly after they clickthrough to an article (within 10 mins). We computed two kinds of return rate:
+
+- Among users with at least a click in their search, the proportion of searches that return to the same search page
+- Among users with at least a click in their search session, the proportion of sessions that return to search for different things (different serp but in the same session)
+
+The median rate of return to the same search is 24%, and the median rate of return to make different search is 26% (after sample rate change).
+
+```{r return_rate}
+returnRate_to_same_search <- tss2_q4 %>%
+  group_by(date, serp_id) %>%
+  filter(sum(grepl("click", event)) > 0) %>% # Among search with at least 1 click
+  arrange(timestamp) %>%
+  mutate(n_click_cumsum = cumsum(grepl("click", event))) %>%
+  filter(n_click_cumsum > 0) %>% # delete serp before first click
+  summarise(comeback = "searchResultPage" %in% event | sum(n_click_cumsum > 1)) %>% # comeback to the same serp or make another click
+  group_by(date) %>%
+  summarise(return_to_same_search = sum(comeback)/length(unique(serp_id)))
+
+returnRate_to_other_search <-  tss2_q4 %>%
+  group_by(date, session_id) %>%
+  filter(sum(grepl("click", event)) > 0) %>% # Among session with at least 1 click
+  arrange(timestamp) %>%
+  mutate(n_click_cumsum = cumsum(grepl("click", event))) %>%
+  filter(n_click_cumsum > 0) %>% # delete serp before first click
+  summarise(another_search = length(unique(serp_id)) > 1) %>% # comeback to make another search
+  group_by(date) %>%
+  summarise(return_to_make_another_search = sum(another_search) / length(unique(session_id)))
+
+returnRate_to_same_search %>%
+  inner_join(returnRate_to_other_search, by = "date") %>%
+  rename(`Return to make different search` = return_to_make_another_search,
+         `Return to the same search page` = return_to_same_search) %>%
+  gather(key=Type, value = rate, -date) %>%
+  ggplot(aes(x=date, y=rate, colour=Type)) + 
+  geom_line(size=1.2) +
+  scale_x_date(name = "Date") +
+  scale_y_continuous(labels = scales::percent, name = "Return Rate") +
+  geom_vline(xintercept = as.numeric(as.Date("2017-04-25")),
+             linetype = "dashed", color = "black") +
+  annotate("text", x = as.Date("2017-04-26"), y = 0.2, label = "sample rate changed", angle = 90) +
+  ggtitle("Return rate after users clickthrough on search engine result pages", subtitle = "Full-text search on desktop") +
+  labs(caption = "*On April 25th, we changed the sample rates for several projects.") +
+  theme_minimal(base_size = 15) +
+  theme(legend.position = "bottom")
+```
+
+## Pageviews to articles from full-text search
+```{r pv_by_search}
+daily_pv_from_serp %>%
+  group_by(date, access_method) %>%
+  summarise(n_pv = sum(n_pv)) %>%
+  rename('Access Method' = access_method) %>%
+  # ggplot(aes(x=date, y=n_pv, colour='Access Method')) + 
+  # geom_line(size=1.2) +
+  ggplot(aes(x=date, y=n_pv, fill=`Access Method`, order=desc(`Access Method`))) +
+  geom_area() +
+  scale_fill_brewer("Access Method", palette = "Set1") +
+  scale_x_date(name = "Date") +
+  scale_y_continuous(labels=polloi::compress, name = "Pageviews") +
+  ggtitle("Pageviews from full-text search") +
+  theme_minimal(base_size = 15) +
+  theme(legend.position = "bottom") 
+```
+Pageviews from full-text search on mobile web saw an increase for 3 weeks in June. This increase doesn't seem to result from bots, since we also saw an increase in the number of users who clickthrough on mobile web:
+```{r mobile_web_traffic}
+daily_pv_from_serp %>%
+  filter(access_method=="mobile web") %>%
+  rename(Pageviews = n_pv, `Number of Searches` = n_search, `Number of Users` = n_user) %>%
+  gather(key=Metrics, value = counts, -c(date, access_method, agent_type)) %>%
+  ggplot(aes(x=date, y=counts, colour=Metrics)) + 
+  geom_line(size=1.2) +
+  scale_x_date(name = "Date") +
+  scale_y_continuous(labels=polloi::compress, name = "Counts") +
+  ggtitle("Mobile web traffic from full-text search") +
+  theme(legend.position = "bottom")
+```
+
+## Sister Search
+
+Wiktionary got the most absolute pageview increase from sister search (increase about 150%), but Wikiversity got the highest increase in proportion, although it is still a small proportion (around 0.13%).
+
+```{r sis_traffic}
+sister_search_traffic <- polloi::read_dataset("discovery/metrics/search/sister_search_traffic.tsv", col_types = "Dcccli") %>%
+    dplyr::mutate(
+      project = polloi::capitalize_first_letter(project),
+      access_method = polloi::capitalize_first_letter(access_method)
+    )
+
+sister_search_traffic %>%
+  group_by(date, project) %>%
+  summarise(pageviews = sum(pageviews)) %>%
+  mutate(Project = factor(project,
+                          levels = c("Wiktionary", "Wikibooks", "Wikisource", "Wikiquote", "Wikinews", "Wikiversity", "Wikimedia Commons", "Wikivoyage", "Wikispecies", "Simple Wiktionary"))) %>%
+  # ggplot(aes(x=date, y=pageviews, colour=project)) +
+  # geom_line(size=1.2) +
+  ggplot(aes(x=date, y=pageviews, fill=Project, order=rev(Project))) +
+  geom_area() +
+  scale_x_date(name = "Date") +
+  scale_y_continuous(name = "Pageviews") +
+  scale_fill_brewer("Project", palette = "Paired") +
+  ggtitle("Traffic to sister projects from Wikipedia search result pages, broken down by project") +
+  theme_minimal(base_size = 15) +
+  theme(legend.position = "bottom") +
+  geom_vline(xintercept = as.numeric(as.Date("2017-06-15")),
+             linetype = "dashed", color = "black") + 
+  labs(caption = "*On 2017-06-15 we deployed the sister search feature to all Wikipedia in all languages.")
+```
+
+```{r project_pv_fetch, eval=FALSE, echo=FALSE}
+start_date <- as.Date("2017-06-01")
+end_date <- as.Date("2017-07-30")
+project_pv <- do.call(rbind, lapply(seq(start_date, end_date, "day"), function(date) {
+  cat("Fetching webrequest data from ", as.character(date), "\n")
+  clause_data <- wmf::date_clause(date)
+ query <- paste("USE wmf;
+    WITH project_pvs AS (
+      SELECT
+        CONCAT(year, '-', LPAD(month, 2, '0'), '-', LPAD(day, 2, '0')) AS date, 
+        access_method,
+        CASE normalized_host.project
+             WHEN 'commons' THEN 'wikimedia commons'
+             WHEN 'simple' THEN CONCAT('simple ', normalized_host.project_class)
+             WHEN 'species' THEN 'wikispecies'
+             ELSE normalized_host.project_class
+        END AS project
+      FROM webrequest",
+  clause_data$date_clause,
+    "AND webrequest_source = 'text'
+      AND is_pageview
+      AND NOT normalized_host.project_class IN('mediawiki', 'wikimediafoundation', 'wikidata')
+      AND NOT normalized_host.project IN('meta', 'incubator')
+      AND normalized_host.project_class IN('wikimedia', 'wikibooks', 'wikinews', 'wikiquote', 'wikisource', 'wikiversity', 'wikivoyage', 'wiktionary')
+      -- keep commons.wikimedia.org and species.wikimedia.org:
+      AND NOT (normalized_host.project_class = 'wikimedia' AND NOT (normalized_host.project IN('commons', 'species')))
+  )
+  SELECT date, access_method, project, COUNT(1) AS pageviews
+  FROM project_pvs
+  GROUP BY date, access_method, project;")
+  results <- wmf::query_hive(query)
+  return(results)
+}))
+readr::write_rds(project_pv, "data/quarterly_metrics/project_pv.rds", "gz")
+# Local
+system("scp chelsyx@stat5:~/data/quarterly_metrics/project_pv.rds data/")
+```
+```{r sis_traffic_prop}
+sis_pv_total <- readr::read_rds("data/project_pv.rds") %>%
+  filter(!(project %in% c("simple wikiquote", "simple wikibooks")), date <= "2017-07-23", 
+         access_method != "mobile app") %>%
+  dplyr::mutate(
+      project = polloi::capitalize_first_letter(project),
+      access_method = polloi::capitalize_first_letter(access_method),
+      date = lubridate::ymd(date)
+    ) %>%
+  rename(total_pv = pageviews)
+sister_search_data <- sister_search_traffic %>%
+  group_by(date, access_method, project) %>%
+  summarise(pageviews = sum(pageviews)) %>%
+  right_join(sis_pv_total, by = c("date", "access_method", "project")) %>%
+  mutate(pageviews = ifelse(is.na(pageviews), 0, pageviews))
+
+sister_search_data %>%
+  group_by(date, project) %>%
+  summarise(total_pv = sum(total_pv), pageviews = sum(pageviews), proportion = pageviews/total_pv) %>%
+  mutate(Project = factor(project,
+                          levels = c("Wikiversity", "Wikibooks", "Wikiquote", "Wikinews", "Wikisource", "Wiktionary", "Wikivoyage", "Simple Wiktionary", "Wikimedia Commons", "Wikispecies"))) %>%
+  ggplot(aes(x=date, y=proportion, colour=Project)) + 
+  geom_line(size=1.2) +
+  scale_x_date(name = "Date") +
+  scale_y_continuous(name = "Proportion of Pageviews", labels = scales::percent) +
+  scale_colour_brewer("Project", palette = "Paired") +
+  ggtitle("Proportion of pageviews from Wikipedia search result pages, broken down by project") +
+  theme_minimal(base_size = 15) +
+  theme(legend.position = "bottom") +
+  geom_vline(xintercept = as.numeric(as.Date("2017-06-15")),
+             linetype = "dashed", color = "black") + 
+  labs(caption = "*On 2017-06-15 we deployed the sister search feature to all Wikipedia in all languages.")
+```
+
+Compared to same-wiki clickthrough rate on Wikipedia, sister search clickthrough rate is very low. The median of sister search clickthrough rate is 0.8%, while the median of same-wiki clickthrough rate is 26%. There was a dip between June 15th and June 29th. I doubt that was causing by our event-logging implementation. Further investigation is needed.
+```{r sis_ctr}
+tss2_searches %>%
+  cbind(polloi::parse_wikiid(tss2_searches$wiki)) %>%
+  filter(project == "Wikipedia") %>%
+  group_by(date) %>%
+  summarise(`Same-Wiki` = sum(`same-wiki clickthrough`, na.rm = TRUE)/n(), `Sister Search` = sum(`sister clickthrough`, na.rm = TRUE)/n()) %>%
+  gather(key = Group, value = ctr, -date) %>%
+  ggplot(aes(x=date, y=ctr, colour=Group)) + 
+  geom_line(size=1.2) +
+  scale_x_date(name = "Date") +
+  scale_y_continuous(name = "Clickthrough Rate", trans = scales::sqrt_trans(), labels = scales::percent) +
+  ggtitle("Clickthrough Rate on Wikipedia, Same-Wiki Clicks vs Sister Search Clicks", subtitle = "Full-text search on desktop") +
+  theme_minimal(base_size = 15) +
+  theme(legend.position = "bottom") +
+  geom_vline(xintercept = as.numeric(as.Date("2017-04-25")),
+             linetype = "dashed", color = "black") + 
+  geom_vline(xintercept = as.numeric(as.Date("2017-06-15")),
+             linetype = "dashed", color = "black") + 
+  geom_vline(xintercept = as.numeric(as.Date("2017-06-28")),
+             linetype = "dashed", color = "black") + 
+  annotate("text", x = as.Date("2017-06-16"), y = 0.03, label = "deployed", angle = 90) +
+  annotate("text", x = as.Date("2017-06-29"), y = 0.03, label = "started to collect data", angle = 90) +
+  annotate("text", x = as.Date("2017-04-26"), y = 0.03, label = "sample rate changed", angle = 90) 
+  # labs(caption = "*On 2017-06-15 we deployed the sister search feature to all Wikipedia in all languages and started to collect eventlogging data on 2017-06-29.")
+```
+
+## Load time on SERP
+
+Before sister search deployed, the median load time was 680, this number increased to 807 after deployed. Since we just deployed more than a month ago, we don't have enough data to raise the alarm.
+```{r load_time}
+desktop_loadtime <- polloi::read_dataset("discovery/metrics/search/desktop_load_times.tsv", col_types = "Dddd") %>%
+  dplyr::filter(!is.na(Median), date >= "2017-01-01")
+desktop_loadtime %>%
+  ggplot(aes(x=date, y=Median)) + 
+  geom_line(size=1.2) +
+  scale_x_date(name = "Date") +
+  scale_y_continuous(labels=polloi::compress, name = "Load time (ms)") +
+  geom_vline(xintercept = as.numeric(as.Date("2017-06-15")),
+             linetype = "dashed", color = "black") +
+  annotate("text", x = as.Date("2017-06-16"), y = 650, label = "sister search deployed", angle = 90) +
+  ggtitle("Desktop full-text search result load times", subtitle = "Median of everyday in 2017") +
+  theme_minimal(base_size = 15) +
+  labs(caption = "*On 2017-06-15 we deployed the sister search feature to all Wikipedia in all languages.")
+```
+
+## Dwell time on SERP
+has it increased because of users reading snippets?
+This one depends on [T170468](https://phabricator.wikimedia.org/T170468) which we haven't been able to work on. We will present next time.
+
+## Click position
+On both desktop and mobile app, more than 80% of clicks are in the first 3 position.
+(probably not very interesting, but worth verbally mention)
+```{r click_position_desktop}
+safe_ordinals <- function(x) {
+  na_mask <- is.na(x)
+  output <- rep(NA, length(x))
+  output[!na_mask] <- vapply(x[!na_mask], toOrdinal::toOrdinal, "")
+  return(output)
+}
+
+tss2_q4 %>%
+  filter(event == "click") %>%
+  mutate(event_position = case_when(
+    event_position >= 4 & event_position < 20 ~ "5th - 20th",
+    event_position >= 20 ~ "21st+",
+    TRUE ~ safe_ordinals(event_position + 1)
+  )) %>%
+  group_by(date, event_position) %>%
+  summarise(n_click = n()) %>%
+  ungroup %>%
+  group_by(date) %>%
+  mutate(prop = n_click/sum(n_click)*100) %>%
+  ggplot(aes(x=date, y=prop, colour=event_position)) + 
+  geom_line(size=1.2) +
+  scale_x_date(name = "Date") +
+  scale_y_continuous(name = "Proportion of clicks (%)", trans = scales::sqrt_trans()) +
+  ggtitle("Proportion of Clicks on Nth Result on Desktop", subtitle="April 1st - June 30th") +
+  theme(legend.position = "bottom")
+```
+Mobile App: see http://discovery.wmflabs.org/metrics/#app_click_position
+ 
+## SERP visits: desktop vs mobile web vs api
+```{r serp_by_method}
+fulltext_api <- polloi::read_dataset("discovery/metrics/search/search_api_usage.tsv", col_types = "Dci") %>%
+  dplyr::filter(!is.na(api), !is.na(calls), api == "cirrus", date >= "2017-04-23", date <= "2017-06-30") %>%
+  dplyr::distinct(date, api, .keep_all = TRUE) %>%
+  rename(access_method=api, n_serp=calls) %>%
+  mutate(access_method = "api")
+
+daily_serp %>%
+  filter(access_method != "mobile app") %>%
+  group_by(date, access_method) %>%
+  summarise(n_serp = sum(n_serp)) %>%
+  bind_rows(fulltext_api) %>%
+  rename(Group = access_method) %>%
+  ggplot(aes(x=date, y=n_serp, colour=Group)) + 
+  geom_smooth(method = "lm", formula = y ~ splines::bs(x, 27), se = FALSE, size=1.2) + 
+  scale_x_date(name = "Date") +
+  scale_y_continuous(labels=polloi::compress, name = "Number of pages", trans = scales::sqrt_trans()) +
+  ggtitle("Number of search engine results pages", subtitle = "API vs Desktop vs Mobile web") +
+  theme_minimal(base_size = 15) +
+  theme(legend.position = "bottom", legend.justification = "left")
+
+daily_serp %>%
+  filter(access_method != "mobile app") %>%
+  group_by(date, access_method) %>%
+  summarise(n_serp = sum(n_serp)) %>%
+  rename(Group = access_method) %>%
+  ggplot(aes(x=date, y=n_serp, colour=Group)) + 
+  geom_smooth(method = "lm", formula = y ~ splines::bs(x, 22), se = FALSE, size=1.2) + 
+  scale_x_date(name = "Date") +
+  scale_y_continuous(labels=polloi::compress, name = "Number of pages") +
+  scale_color_manual(values=scales::hue_pal()(3)[2:3]) + 
+  ggtitle("Desktop vs Mobile web") +
+  theme_minimal(base_size = 15) +
+  theme(legend.position = "bottom")
+```
+
+## Clickthrough rate by project
+Among the top 5 projects which have the most searches, Wikidata has the highest clickthrough rate while wikimedia commons has the lowest clickthrough rate.
+```{r ctr_by_project}
+top_project <- tss2_searches %>%
+  cbind(polloi::parse_wikiid(tss2_searches$wiki)) %>%
+  group_by(project) %>%
+  summarise(n_search = n()) %>%
+  top_n(5)
+
+tss2_searches %>%
+  cbind(polloi::parse_wikiid(tss2_searches$wiki)) %>%  
+  filter(project %in% top_project$project) %>%
+  group_by(date, project) %>%
+  summarise(ctr = sum(`same-wiki clickthrough`, na.rm = TRUE)/n()) %>%
+  mutate(Project = factor(project, 
+                          levels = c("Wikidata", "Wikisource", "Wikipedia", "Wiktionary", "Wikimedia Commons"))) %>%
+  ggplot(aes(x=date, y=ctr, colour=Project)) + 
+  geom_line(size=1.2) +
+  scale_x_date(name = "Date") +
+  scale_y_continuous(name = "Clickthrough Rate", labels = scales::percent) +
+  ggtitle("Clickthrough rate by top 5 projects", subtitle = "Full-text search on desktop") +
+  theme_minimal(base_size = 15) +
+  theme(legend.position = "bottom") +
+  geom_vline(xintercept = as.numeric(as.Date("2017-04-25")),
+             linetype = "dashed", color = "black") +
+  annotate("text", x = as.Date("2017-04-26"), y = 0.2, label = "sample rate changed", angle = 90) +
+  labs(caption = "*On April 25th, we changed the sample rates for several projects.")
+```
