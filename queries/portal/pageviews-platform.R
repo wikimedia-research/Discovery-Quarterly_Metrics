@@ -1,68 +1,26 @@
 #!/usr/bin/env Rscript
 
 # Wikipedia.org PVs by mobile vs desktop
-# Phabricator: T171529
 
 args = commandArgs(trailingOnly = TRUE)
-today <- args[1]
+yr_quarter <- args[1]
 
-message("\nFetching portal pageviews by platform for the 60 days leading up to ", today, "\n")
+message("\nFetching portal pageviews by platform for the 60 days leading up to ", Sys.Date(), "\n")
 
 suppressPackageStartupMessages({
   library(glue)
 })
 
-tsv_path <- glue("data/portal/pageviews-platform_{today}.tsv")
+tsv_path <- glue("{yr_quarter}/data/portal/pageviews-platform.tsv")
 
 if (!dir.exists(dirname(tsv_path))) {
   dir.create(dirname(tsv_path), recursive = TRUE)
 }
 
-query <- "SELECT
-  IF((
-    user_agent_map['os_family'] IN('Android', 'iOS', 'Firefox OS', 'Chrome OS', 'BlackBerry OS', 'Kindle')
-    OR INSTR(user_agent_map['os_family'], 'Phone') > 0
-    OR user_agent_map['os_family'] RLIKE '^Symbian'
-    OR INSTR(user_agent_map['browser_family'], 'Mobile') > 0
-    OR user_agent_map['browser_family'] = 'Opera Mini'
-    OR user_agent_map['device_family'] RLIKE '^((HTC)|(Samsung)|(Moto))'
-    OR user_agent_map['device_family'] RLIKE '([pP]hone)|([tT]ablet)|(Lumia)'
-  ), 'mobile', 'desktop') AS device,
-  COUNT(1) AS pageviews
-FROM wmf.webrequest
-WHERE
-  webrequest_source = 'text'
-  AND year = ${year} AND month = ${month} AND day = ${day}
-  AND uri_host RLIKE('^(www\\.)?wikipedia.org/*$')
-  AND INSTR(uri_path, 'search-redirect.php') = 0
-  AND content_type RLIKE('^text/html')
-  AND NOT (referer RLIKE('^http://localhost'))
-  AND agent_type = 'user'
-  AND referer_class != 'unknown'
-  AND http_status IN('200', '304')
-GROUP BY
-  IF((
-    user_agent_map['os_family'] IN('Android', 'iOS', 'Firefox OS', 'Chrome OS', 'BlackBerry OS', 'Kindle')
-    OR INSTR(user_agent_map['os_family'], 'Phone') > 0
-    OR user_agent_map['os_family'] RLIKE '^Symbian'
-    OR INSTR(user_agent_map['browser_family'], 'Mobile') > 0
-    OR user_agent_map['browser_family'] = 'Opera Mini'
-    OR user_agent_map['device_family'] RLIKE '^((HTC)|(Samsung)|(Moto))'
-    OR user_agent_map['device_family'] RLIKE '([pP]hone)|([tT]ablet)|(Lumia)'
-  ), 'mobile', 'desktop');"
+pageviews <- readr::read_tsv(
+  "/srv/published-datasets/discovery/metrics/portal/pageviews_by_device.tsv",
+  col_types = "Dci"
+)
 
-results <- do.call(rbind, lapply(
-  seq(as.Date(today) - 61, as.Date(today) - 1, by = "day"),
-  function(date) {
-    message("Fetching data from ", format(date, "%Y-%m-%d"))
-    year <- lubridate::year(date)
-    month <- lubridate::month(date)
-    day <- lubridate::mday(date)
-    query <- glue(query, .open = "${", .close = "}")
-    result <- wmf::query_hive(query)
-    return(cbind(date = date, result))
-  }
-))
-
-readr::write_tsv(results, tsv_path)
+readr::write_tsv(pageviews, tsv_path)
 message("\nData written to ", tsv_path, "\n")

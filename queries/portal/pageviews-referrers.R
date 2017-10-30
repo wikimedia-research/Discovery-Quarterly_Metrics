@@ -1,19 +1,18 @@
 #!/usr/bin/env Rscript
 
 # Wikipedia.org PVs by referrer
-# Phabricator: T171529
 
 args = commandArgs(trailingOnly = TRUE)
-today <- args[1]
+yr_quarter <- args[1]
 
-message("\nFetching portal pageviews referrer data leading up to ", today, "\n")
+message("\nFetching portal pageviews referrer data leading up to ", Sys.Date(), "\n")
 
 suppressPackageStartupMessages({
   library(magrittr)
   library(glue)
 })
 
-tsv_path <- glue("data/portal/pageviews-referrer_{today}.tsv")
+tsv_path <- glue("{yr_quarter}/data/portal/pageviews-referrer.tsv")
 
 if (!dir.exists(dirname(tsv_path))) {
   dir.create(dirname(tsv_path), recursive = TRUE)
@@ -24,7 +23,6 @@ suppressWarnings(
     "/srv/published-datasets/discovery/metrics/portal/referer_data.tsv",
     col_types = "Dlcci"
   )
-  # pageviews <- polloi::read_dataset("discovery/metrics/portal/referer_data.tsv", col_types = "Dlcci")
 )
 
 results <- pageviews %>%
