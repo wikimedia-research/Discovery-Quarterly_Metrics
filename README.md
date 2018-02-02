@@ -3,7 +3,7 @@
 Phabricator: [T171528](https://phabricator.wikimedia.org/T171528) & [T178958](https://phabricator.wikimedia.org/T178958)
 
 ```bash
-QUARTER='2017-2018Q1'
+QUARTER='2017-2018Q2'
 nice ionice ./main.sh ${QUARTER} >> main.log 2>&1
 ```
 
@@ -28,11 +28,6 @@ devtools::install_git("https://gerrit.wikimedia.org/r/wikimedia/discovery/polloi
 - **Wikimedia Maps**
   - total article, articles with some sort of map (-link or -frame) and maplink prevalence % vs total articles by top languages
   - tiles served breakdown (total tiles and average per user)
-- **Wikipedia.org Portal**
-  - Pageviews (percentages of mobile v desktop)
-  - Clickthrough by device (desktop vs mobile)
-  - How traffic gets there (direct vs referred)
-  - (auto complete vs 'go' button) "Do we know what % of searches the type-ahead satisfies on the Portal?" (we don't log this information right now)
 - **Search Platform**
   - searches: api vs desktop vs mobile (use splines?)
     - quarter over quarter data changes (if possible)
@@ -43,25 +38,3 @@ devtools::install_git("https://gerrit.wikimedia.org/r/wikimedia/discovery/polloi
   - return rate after users clickthrough on SERP (same page, or diff search)
   - sister project clickthrough and prevalence on SERP
   - traffic to sister projects from SERP (all languages)
-
-### Mobile vs Desktop
-
-Since there is no "m.wikipedia.org" and, instead, "wikipedia.org" is a responsive page, we must estimate the per-platform breakdown of pageviews via rules on user agents. We can approximate the rules used in Varnish by looking at the top 100 devices, OSes, and browsers that access mobile versions of Wikipedia.
-
-Since OS and browser breakdowns are available via [Pivot](https://pivot.wikimedia.org), we can just get those from there. For devices, a Hive query is required:
-
-```Hive
-SELECT
-  user_agent_map['device_family'] AS device_family,
-  COUNT(1) AS pageviews
-FROM wmf.webrequest
-WHERE
-  webrequest_source = 'text'
-  AND year = ${year} AND month = ${month} AND day = ${day} AND hour = ${hour}
-  AND is_pageview
-  AND agent_type = 'user'
-  AND access_method = 'mobile web'
-GROUP BY user_agent_map['device_family']
-ORDER BY pageviews DESC
-LIMIT 100;
-```

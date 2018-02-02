@@ -19,14 +19,13 @@ if (!dir.exists(dirname(tsv_path))) {
 }
 
 suppressWarnings(
-  tiles <- readr::read_tsv(
-    "/srv/published-datasets/discovery/metrics/maps/tile_aggregates_no_automata.tsv",
+  tiles <- polloi::read_dataset(
+    "discovery/metrics/maps/tile_aggregates_no_automata.tsv",
     col_types = "Dcddcciidddd"
   )
 )
 
 results <- tiles %>%
-  dplyr::filter(date >= (Sys.Date() - 180)) %>%
   dplyr::group_by(date) %>%
   dplyr::summarize(tiles = sum(total), avg = sum(total) / sum(users))
 
